@@ -3,6 +3,7 @@
 
 #include <Arduino.h>
 #include <freertos/FreeRTOS.h>
+#include <HX711.h>
 
 class Calibration
 {
@@ -55,10 +56,10 @@ protected:
     }
 };
 
-class HX711 : Calibration
+class Loadcell : Calibration
 {
 public:
-    HX711(uint8_t sck = -1, uint8_t dout = -1, double calib_a = 1.0, double calib_b = 0.0)
+    Loadcell(uint8_t sck = -1, uint8_t dout = -1, double calib_a = 1.0, double calib_b = 0.0)
     {
         this->sck = sck;
         this->dout = dout;
@@ -67,38 +68,14 @@ public:
     };
     void init(void)
     {
-        pinMode(this->sck, OUTPUT);
-        pinMode(this->dout, INPUT);
-        digitalWrite(this->sck, 1);
-        delayMicroseconds(60);
-        digitalWrite(this->sck, 0);
-    }
-
+        this->hx711.begin(this->dout, this->sck);
+    };
+    
     int32_t read(void){
         int32_t ret = 0;
-        // DOUT->LOW　つまり Data Readyになるまで待つ
-        while (!digitalRead(this->dout) == LOW)
-        {
-            // まだだった場合10ms程度待つ
-            vTaskDelay(10/portTICK_PERIOD_MS);
-        }
-        // パルスの作成中にRTOSに処理持ってかれたらマズイのでRTOSを止める
-        portMUX_TYPE mux = SPINLOCK_INITIALIZER;
-        portENTER_CRITICAL(&mux);
-        {
-            // 1ビットずつ読み込む
-            for (char i = 0; i < 24; i++)
-            {
-                this->pulse();
-                ret = (ret << 1) | (digitalRead(this->dout));
-            }
-            // 次回変換先＆ゲイン指定、詳しくはデータシート
-            this->pulse(); // one pulse -> channel A amp x128
-        }
-        portEXIT_CRITICAL(&mux);
-        // このままだと負の値、最上位ビットが24ビット目にあるが、
-        // 32ビットに格納する必要があるので、左に8ビットシフトする
-        return (int32_t)(ret << 8);
+        // Data Readyになるまで10msずつ待つ
+        this->hx711.wait_ready(10);
+        return this->hx711.read();
     }
 
     void task(void) {
@@ -151,25 +128,18 @@ public:
     }
 
 private:
+    HX711 hx711;
     uint8_t sck;
     uint8_t dout;
     int32_t raw_value;
     float phy_value;
-    
-    void pulse(void)
-    {
-        digitalWrite(this->sck, 1);
-        delayMicroseconds(1);
-        digitalWrite(this->sck, 0);
-        delayMicroseconds(1);
-    }
 };
 
-static void HX711_Task(void *pvParameters)
+static void Loadcell_Task(void *pvParameters)
 {
-    HX711 *phx711 = (HX711 *)pvParameters;
-    phx711->init();
-    for (;;) { phx711->task(); }
+    Loadcell *lc = (Loadcell *)pvParameters;
+    lc->init();
+    for (;;) { lc->task(); }
 }
 
 #endif /*__HAWLOGGER_UTILS_H__*/

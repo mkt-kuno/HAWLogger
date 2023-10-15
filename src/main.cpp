@@ -37,17 +37,17 @@ const char *TAG = "MAIN";
 SPIClass sdspi(VSPI);
 ADS1115_WE adc = ADS1115_WE();
 
-#define ESP32_SLOW_CLOCK 80E6
-#define ESP32_FAST_CLOCK 320E6
+#define ESP32_SLOW_CLOCK 80
+#define ESP32_FAST_CLOCK 240
 
 //////////////// Calibration Value //////////////////
 #define NUM_HX711_CH 4
 
-HX711 st_hx711[] = {
-    HX711(32, 36, 0.001, 0.0),
-    HX711(33, 39, 0.001, 0.0),
-    HX711(25, 34, 0.001, 0.0),
-    HX711(26, 35, 0.001, 0.0),
+Loadcell st_hx711[] = {
+    Loadcell(32, 36, 0.001, 0.0),
+    Loadcell(33, 39, 0.001, 0.0),
+    Loadcell(25, 34, 0.001, 0.0),
+    Loadcell(26, 35, 0.001, 0.0),
 };
 
 #define CALIB_DISP_AX (20.884)
@@ -58,7 +58,7 @@ void MainTask(void *pvParameters);
 // the setup function runs once when you press reset or power the board
 void setup(void)
 {
-    //setCpuFrequencyMhz(ESP32_SLOW_CLOCK);
+    setCpuFrequencyMhz(ESP32_SLOW_CLOCK);
 
     Serial.begin(115200);
     while (!Serial) {}
@@ -69,10 +69,10 @@ void setup(void)
     Wire.setClock(400E3);
 
     xTaskCreate(MainTask, "Main", configMINIMAL_STACK_SIZE + 2048, NULL, 1, NULL);
-    xTaskCreate(HX711_Task, "hx711[0]", configMINIMAL_STACK_SIZE + 128, (void *)&st_hx711[0], 2, NULL);
-    xTaskCreate(HX711_Task, "hx711[1]", configMINIMAL_STACK_SIZE + 128, (void *)&st_hx711[1], 2, NULL);
-    xTaskCreate(HX711_Task, "hx711[2]", configMINIMAL_STACK_SIZE + 128, (void *)&st_hx711[2], 2, NULL);
-    xTaskCreate(HX711_Task, "hx711[3]", configMINIMAL_STACK_SIZE + 128, (void *)&st_hx711[3], 2, NULL);
+    xTaskCreate(Loadcell_Task, "hx711[0]", configMINIMAL_STACK_SIZE + 128, (void *)&st_hx711[0], 2, NULL);
+    xTaskCreate(Loadcell_Task, "hx711[1]", configMINIMAL_STACK_SIZE + 128, (void *)&st_hx711[1], 2, NULL);
+    xTaskCreate(Loadcell_Task, "hx711[2]", configMINIMAL_STACK_SIZE + 128, (void *)&st_hx711[2], 2, NULL);
+    xTaskCreate(Loadcell_Task, "hx711[3]", configMINIMAL_STACK_SIZE + 128, (void *)&st_hx711[3], 2, NULL);
 }
 
 void loop()
@@ -160,8 +160,6 @@ void MainTask(void *pvParameters) // This is a task.
 
     pinMode(BTN_INPUT, INPUT_PULLUP);
 
-    // pinMode(LED_BUILTIN, OUTPUT);
-
     for (;;) // A Task shall never return or exit.
     {
         // HX711データ取得
@@ -172,6 +170,7 @@ void MainTask(void *pvParameters) // This is a task.
         // 変位計ADCデータ取得
         adc.setCompareChannels(ADS1115_COMP_0_GND);
         local_disp = adc.getResult_V();
+        phy_displace = local_disp * CALIB_DISP_AX + CALIB_DISP_B;
 
         // ボタン短押し・長押し処理
         btn_store = btn_store << 1 | (!digitalRead(BTN_INPUT) & 0x01);
@@ -188,7 +187,7 @@ void MainTask(void *pvParameters) // This is a task.
             // Start or Stop Recording
             if (!is_recording)
             {
-                //(ESP32_FAST_CLOCK);
+                setCpuFrequencyMhz(ESP32_FAST_CLOCK);
 
                 sd_make_filename(sd_fn, sd_fn_len);
                 // ヘッダーを書き込む
@@ -202,7 +201,7 @@ void MainTask(void *pvParameters) // This is a task.
             }
             else
             {
-                //setCpuFrequencyMhz(ESP32_SLOW_CLOCK);
+                setCpuFrequencyMhz(ESP32_SLOW_CLOCK);
 
                 is_recording = false;
                 memset(sd_fn, 0x00, sd_fn_len + 1);
@@ -248,32 +247,16 @@ void MainTask(void *pvParameters) // This is a task.
                 lcd.print(" ");
                 lcd.print(sd_fn);
             }
-            lcd.setCursor(0, 1);
-            lcd.print(dtostrf((float)xTaskGetTickCount() / configTICK_RATE_HZ, 6, 1, dtostrf_buf));
-            lcd.print("s");
-            lcd.setCursor(8, 1);
-            lcd.print(dtostrf(phy_displace, 6, 2, dtostrf_buf));
-            lcd.print("mm");
+            lcd.setCursor(0, 1); lcd.print(dtostrf((float)xTaskGetTickCount() / configTICK_RATE_HZ, 6, 1, dtostrf_buf)); lcd.print("s");
+            lcd.setCursor(8, 1); lcd.print(dtostrf(phy_displace, 6, 2, dtostrf_buf)); lcd.print("mm");
             break;
         case 1:
-            lcd.setCursor(0, 0);
-            lcd.print("hxA:");
-            lcd.print(dtostrf(l_phy_hx711[0], 9, 1, dtostrf_buf));
-            lcd.print("[N]");
-            lcd.setCursor(0, 1);
-            lcd.print("hxB:");
-            lcd.print(dtostrf(l_phy_hx711[1], 9, 1, dtostrf_buf));
-            lcd.print("[N]");
+            lcd.setCursor(0, 0); lcd.print("hxA:"); lcd.print(dtostrf(l_phy_hx711[0], 9, 1, dtostrf_buf)); lcd.print("[N]");
+            lcd.setCursor(0, 1); lcd.print("hxB:"); lcd.print(dtostrf(l_phy_hx711[1], 9, 1, dtostrf_buf)); lcd.print("[N]");
             break;
         case 2:
-            lcd.setCursor(0, 0);
-            lcd.print("hxC:");
-            lcd.print(dtostrf(l_phy_hx711[2], 9, 1, dtostrf_buf));
-            lcd.print("[N]");
-            lcd.setCursor(0, 1);
-            lcd.print("hxD:");
-            lcd.print(dtostrf(l_phy_hx711[3], 9, 1, dtostrf_buf));
-            lcd.print("[N]");
+            lcd.setCursor(0, 0); lcd.print("hxC:"); lcd.print(dtostrf(l_phy_hx711[2], 9, 1, dtostrf_buf)); lcd.print("[N]");
+            lcd.setCursor(0, 1); lcd.print("hxD:"); lcd.print(dtostrf(l_phy_hx711[3], 9, 1, dtostrf_buf)); lcd.print("[N]");
             break;
         }
 
@@ -289,40 +272,21 @@ void MainTask(void *pvParameters) // This is a task.
             {
                 int p = 0;
                 memset(sd_buf, 0x00, sd_buf_size + 1);
-                dtostrf((float)xTaskGetTickCount() / configTICK_RATE_HZ, -1, 3, dtostrf_buf);
-                p += sprintf(&sd_buf[p], "%s", dtostrf_buf);
-                sd_buf[p++] = ',';
-                p += sprintf(&sd_buf[p], "0x%08lX", l_raw_hx711[0]) - 2;
-                sd_buf[p++] = ',';
-                p += sprintf(&sd_buf[p], "0x%08lX", l_raw_hx711[1]) - 2;
-                sd_buf[p++] = ',';
-                p += sprintf(&sd_buf[p], "0x%08lX", l_raw_hx711[2]) - 2;
-                sd_buf[p++] = ',';
-                p += sprintf(&sd_buf[p], "0x%08lX", l_raw_hx711[3]) - 2;
-                sd_buf[p++] = ',';
-                dtostrf(phy_displace, -1, 3, dtostrf_buf);
-                p += sprintf(&sd_buf[p], "%s", dtostrf_buf);
-                sd_buf[p++] = ',';
-                dtostrf(l_phy_hx711[0], -1, 3, dtostrf_buf);
-                p += sprintf(&sd_buf[p], "%s", dtostrf_buf);
-                sd_buf[p++] = ',';
-                dtostrf(l_phy_hx711[1], -1, 3, dtostrf_buf);
-                p += sprintf(&sd_buf[p], "%s", dtostrf_buf);
-                sd_buf[p++] = ',';
-                dtostrf(l_phy_hx711[2], -1, 3, dtostrf_buf);
-                p += sprintf(&sd_buf[p], "%s", dtostrf_buf);
-                sd_buf[p++] = ',';
-                dtostrf(l_phy_hx711[3], -1, 3, dtostrf_buf);
-                p += sprintf(&sd_buf[p], "%s", dtostrf_buf);
-                sd_buf[p++] = ',';
-                dtostrf(phy_displace, -1, 3, dtostrf_buf);
-                p += sprintf(&sd_buf[p], "%s", dtostrf_buf);
+                dtostrf((float)xTaskGetTickCount() / configTICK_RATE_HZ, -1, 3, dtostrf_buf); p += sprintf(&sd_buf[p], "%s", dtostrf_buf); sd_buf[p++] = ',';
+                p += sprintf(&sd_buf[p], "0x%08lX", l_raw_hx711[0]) - 2; sd_buf[p++] = ',';
+                p += sprintf(&sd_buf[p], "0x%08lX", l_raw_hx711[1]) - 2; sd_buf[p++] = ',';
+                p += sprintf(&sd_buf[p], "0x%08lX", l_raw_hx711[2]) - 2; sd_buf[p++] = ',';
+                p += sprintf(&sd_buf[p], "0x%08lX", l_raw_hx711[3]) - 2; sd_buf[p++] = ',';
+                dtostrf(phy_displace, -1, 3, dtostrf_buf);   p += sprintf(&sd_buf[p], "%s", dtostrf_buf); sd_buf[p++] = ',';
+                dtostrf(l_phy_hx711[0], -1, 3, dtostrf_buf); p += sprintf(&sd_buf[p], "%s", dtostrf_buf); sd_buf[p++] = ',';
+                dtostrf(l_phy_hx711[1], -1, 3, dtostrf_buf); p += sprintf(&sd_buf[p], "%s", dtostrf_buf); sd_buf[p++] = ',';
+                dtostrf(l_phy_hx711[2], -1, 3, dtostrf_buf); p += sprintf(&sd_buf[p], "%s", dtostrf_buf); sd_buf[p++] = ',';
+                dtostrf(l_phy_hx711[3], -1, 3, dtostrf_buf); p += sprintf(&sd_buf[p], "%s", dtostrf_buf); sd_buf[p++] = ',';
+                dtostrf(phy_displace, -1, 3, dtostrf_buf);   p += sprintf(&sd_buf[p], "%s", dtostrf_buf);
                 csvFile.println(sd_buf);
                 csvFile.close();
             }
         }
-        // digitalWrite(LED_BUILTIN, 1);
         vTaskDelay(48 / portTICK_PERIOD_MS);
-        // digitalWrite(LED_BUILTIN, 0);
     }
 }

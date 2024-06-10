@@ -19,10 +19,10 @@ void OLED1602::sendCommand(unsigned char command) {
 
 void OLED1602::sendData(unsigned char data)
 {
-  Wire.beginTransmission(OLED_Address);  	// **** Start I2C 
-  Wire.write(OLED_Data_Mode);     		// **** Set OLED Data mode
-  Wire.write(data);
-  Wire.endTransmission();                     // **** End I2C 
+    Wire.beginTransmission(OLED_Address);  	// **** Start I2C 
+    Wire.write(OLED_Data_Mode);     		// **** Set OLED Data mode
+    Wire.write(data);
+    Wire.endTransmission();                     // **** End I2C 
 }
 
 void OLED1602::begin()

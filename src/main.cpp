@@ -32,14 +32,14 @@ LiquidCrystal_I2C lcd(0x27, 20, 4);
 
 const char *TAG = "MAIN";
 
-#define FIRMWARE_VERSION_STR "HAW version 0.1"
+#define FIRMWARE_VERSION_STR "HAW version 1.00"
 #define CSV_NAMING_RULE "/haw_%02d.CSV"
-#define CSV_HEADER "time[s],hx711a[i24],hx711b[i24],hx711c[i24],disp[V],hx711a[N],hx711b[N]],hx711c[N],disp[mm]"
+#define CSV_HEADER "time[s],hx711a[i24],hx711b[i24],disp[V],hx711a[N],hx711b[N],disp[mm]"
 
 SPIClass sdspi(VSPI);
 ADS1115_WE adc = ADS1115_WE();
 
-#define ESP32_SLOW_CLOCK 40
+#define ESP32_SLOW_CLOCK 80
 #define ESP32_FAST_CLOCK 240
 
 //////////////// Calibration Value //////////////////
@@ -49,7 +49,7 @@ static double CALIB_HX711A_AX = 0.00022828; // Horizontal
 static double CALIB_HX711A_B  = 2.47313;
 static double CALIB_HX711B_AX = 0.00042649; // Vertical
 static double CALIB_HX711B_B  = 2118.3;
-static double CALIB_DISP_AX = 31.1;
+static double CALIB_DISP_AX = 31.15;
 static double CALIB_DISP_B  = 0.000;
 
 Loadcell st_hx711[] = {

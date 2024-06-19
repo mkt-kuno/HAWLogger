@@ -138,7 +138,7 @@ private:
     uint8_t dout;
 };
 
-static void Loadcell_Task(void *pvParameters)
+static void loadcell_task(void *pvParameters)
 {
     Loadcell *lc = (Loadcell *)pvParameters;
     lc->init();

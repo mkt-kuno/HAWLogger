@@ -1,27 +1,44 @@
 ////////////////////////////////////
-//* Project for Arduino Mega2560 *//
+//* Project for Arduino ESP32    *//
 ////////////////////////////////////
+#include "utils.h"
+
 #include <Arduino.h>
 #include <Wire.h>
 #include <SPI.h>
 #include <SD.h>
-#include <math.h>
+#include <WiFi.h>
+#include <FS.h>
 
 #include <freertos/FreeRTOS.h>
-#include <WiFi.h>
-#include <ESPmDNS.h>
 #include <esp_wifi.h>
-#include <AsyncTCP.h>
+
+#include <math.h>
+
+#include <ESPFMfGK.h>
+#include <ADS1115_WE.h>
 #include <LittleFS.h>
 #include <ArduinoJson.h>
-#include <ESPAsyncWebServer.h>
-#include <ADS1115_WE.h>
 
-#include "utils.h"
+const char *TAG = "MAIN";
+const word fmng_port = 8080;
+bool is_fmng_enabled = false;
 
-#define BTN_INPUT (27)
-
+#define SD_SPI_CS               (5)
+#define BTN_INPUT               (27)
 #define DISPLAY_OLED
+#define FIRMWARE_VERSION_STR    "HAW version 2.00"
+#define CSV_NAMING_RULE         "/haw_%02d.CSV"
+#define CSV_HEADER              "time[s],hx711a[i24],hx711b[i24],disp[V],hx711a[N],hx711b[N],disp[mm]"
+#define WIFI_AP_MAX_CLIENTS     (4)
+#define NUM_HX711_CH            (2)
+#define ESP32_SLOW_CLOCK        (80)
+#define ESP32_FAST_CLOCK        (240)
+
+SPIClass sdspi(VSPI);
+ADS1115_WE adc = ADS1115_WE();
+ESPFMfGK fmng(fmng_port);
+Loadcell st_hx711[] = { Loadcell(32, 36, 1.0, 0.0), Loadcell(33, 39, 1.0, 0.0),};
 #ifdef DISPLAY_OLED
 #include "oled1602.h"
 OLED1602 lcd = OLED1602();
@@ -29,22 +46,13 @@ OLED1602 lcd = OLED1602();
 #include <LiquidCrystal_I2C.h>
 LiquidCrystal_I2C lcd(0x27, 20, 4);
 #endif
-
-const char *TAG = "MAIN";
-
-#define FIRMWARE_VERSION_STR "HAW version 1.00"
-#define CSV_NAMING_RULE "/haw_%02d.CSV"
-#define CSV_HEADER "time[s],hx711a[i24],hx711b[i24],disp[V],hx711a[N],hx711b[N],disp[mm]"
-
-SPIClass sdspi(VSPI);
-ADS1115_WE adc = ADS1115_WE();
-
-#define ESP32_SLOW_CLOCK 80
-#define ESP32_FAST_CLOCK 240
+typedef enum {
+    BUTTON_NONE = 0,
+    BUTTON_SHORT,
+    BUTTON_LONG,
+} BUTTON_EVENT_T;
 
 //////////////// Calibration Value //////////////////
-#define NUM_HX711_CH 2
-
 static double CALIB_HX711A_AX = 0.00022828; // Horizontal
 static double CALIB_HX711A_B  = 2.47313;
 static double CALIB_HX711B_AX = 0.00042649; // Vertical
@@ -52,49 +60,186 @@ static double CALIB_HX711B_B  = 2118.3;
 static double CALIB_DISP_AX = 31.15;
 static double CALIB_DISP_B  = 0.000;
 
-Loadcell st_hx711[] = {
-    Loadcell(32, 36, 1.0, 0.0),
-    Loadcell(33, 39, 1.0, 0.0),
-    // Loadcell(25, 34, 0.001, 0.0),
-    // Loadcell(26, 35, 0.001, 0.0),
-};
+void logger_main_task(void *pvParameters);
+void logger_button_task(void *pvParameters);
+void logger_setup(void);
+void fmng_setup(void);
+void fmng_loop(void);
+static inline float get_float_time_sec(void) { return (float)xTaskGetTickCount() / configTICK_RATE_HZ; }
 
-typedef enum {
-    BUTTON_NONE = 0,
-    BUTTON_SHORT,
-    BUTTON_LONG,
-} BUTTON_EVENT_T;
-void MainTask(void *pvParameters);
-void ButtonTask(void *pvParameters);
-
-// the setup function runs once when you press reset or power the board
-void setup(void)
+void setup()
 {
-    setCpuFrequencyMhz(ESP32_SLOW_CLOCK);
-
     Serial.begin(115200);
     while (!Serial) {}
     Serial.setDebugOutput(true);
-    ESP_LOGI(TAG, "setup, UART start");
+
+    LittleFS.begin();
+    ESP_LOGI(TAG, "LittleFS started");
 
     Wire.begin();
     Wire.setClock(400E3);
 
-    QueueHandle_t xButtonQueue = xQueueCreate(1, sizeof(BUTTON_EVENT_T));
-    xTaskCreate(MainTask, "Main", configMINIMAL_STACK_SIZE + 2048, (void *)xButtonQueue, 1, NULL);
-    xTaskCreate(ButtonTask, "Button", configMINIMAL_STACK_SIZE + 32, (void *)xButtonQueue, 1, NULL);
-    xTaskCreate(Loadcell_Task, "hx711[0]", configMINIMAL_STACK_SIZE + 128, (void *)&st_hx711[0], 2, NULL);
-    xTaskCreate(Loadcell_Task, "hx711[1]", configMINIMAL_STACK_SIZE + 128, (void *)&st_hx711[1], 2, NULL);
-    // xTaskCreate(Loadcell_Task, "hx711[2]", configMINIMAL_STACK_SIZE + 128, (void *)&st_hx711[2], 2, NULL);
-    // xTaskCreate(Loadcell_Task, "hx711[3]", configMINIMAL_STACK_SIZE + 128, (void *)&st_hx711[3], 2, NULL);
+#ifdef DISPLAY_OLED
+    lcd.begin();
+    lcd.setContrast(0x02);
+    lcd.lcdOn();
+#else
+    lcd.begin(20, 4);
+    lcd.backlight();
+#endif
+
+    lcd.clear();
+    lcd.setCursor(0, 0);
+    lcd.print("To Enter FM Mode");
+    lcd.setCursor(0, 1);
+    lcd.print("LongPress Button");
+
+    vTaskDelay(1000 / portTICK_PERIOD_MS);
+
+    int is_logger_mode = 10;
+    pinMode(BTN_INPUT, INPUT);
+    for (uint8_t timeout = 0; timeout < 10; timeout++)
+    {
+        if (digitalRead(BTN_INPUT) == HIGH) {
+            break;
+        }
+        ESP_LOGI(TAG, "Waiting button... %d", is_logger_mode);
+        is_logger_mode--;
+        delay(100);
+    }
+
+    lcd.clear();
+    lcd.setCursor(0, 0);
+    
+    if (is_logger_mode > 0) {
+        ESP_LOGI(TAG, "Enter Logger Mode");
+        logger_setup();
+    } else {
+        ESP_LOGI(TAG, "Enter FileManager Mode");
+        is_fmng_enabled = true;
+        fmng_setup();
+    }
 }
 
 void loop()
 {
-    // Empty. Things are done in Tasks.
+    fmng_loop();
 }
 
-void sd_make_filename(char *fn_str, int fn_str_len)
+void fmng_loop()
+{
+    if (!is_fmng_enabled) return;
+    
+    fmng.handleClient();
+
+    // toggle lcd per 2 seconds
+    static float last_time = 0;
+    if (get_float_time_sec() - last_time > 2) {
+        last_time = get_float_time_sec();
+        static bool toggle = false;
+        toggle = !toggle;
+        if (toggle) {
+            lcd.clear();
+            lcd.setCursor(0, 0);
+            lcd.print("192.168.4.1:8080");
+            lcd.setCursor(0, 1);
+            lcd.print("FileManager Mode");
+        } else {
+            lcd.clear();
+            lcd.setCursor(0, 0);
+            lcd.print("SSID: HAWLogger ");
+            lcd.setCursor(0, 1);
+            lcd.print("PASS: 0123456789");
+        }
+    }
+}
+
+void fmng_add_fs(void) {
+    // Add SD File System
+    if (SD.begin(SD_SPI_CS, sdspi)) {
+        if (!fmng.AddFS(SD, "SD Card", false)) {
+            ESP_LOGI(TAG, "Adding SD failed.");
+        }
+        ESP_LOGI(TAG, "Adding SD success.");
+    } else {
+        ESP_LOGE(TAG, "SD File System not inited.");
+    }
+    // Add LittleFS
+    if (fmng.AddFS(LittleFS, "LittleFS", false)) {
+        ESP_LOGI(TAG, "Adding LittleFS success.");
+    } else {
+        ESP_LOGI(TAG, "Adding LittleFS failed.");
+    }
+}
+
+uint32_t fmng_check_fflags(fs::FS &fs, String filename, uint32_t flags) {
+    // Checks if target file name is valid for action. This will simply allow everything by returning the queried flag
+    if (flags & ESPFMfGK::flagIsValidAction) { return flags & (~ESPFMfGK::flagIsValidAction);  }
+    // Checks if target file name is valid for action.
+    if (flags & ESPFMfGK::flagIsValidTargetFilename) { return flags & (~ESPFMfGK::flagIsValidTargetFilename);}
+    // Default actions
+    int32_t defaultflags = ESPFMfGK::flagCanDelete | ESPFMfGK::flagCanRename | ESPFMfGK::flagCanGZip |
+                           ESPFMfGK::flagCanDownload | ESPFMfGK::flagCanUpload | ESPFMfGK::flagCanEdit |
+                           ESPFMfGK::flagAllowPreview;
+    return defaultflags;
+}
+
+void fmng_initialize(void) {
+    // See above.
+    fmng.checkFileFlags = fmng_check_fflags;
+    fmng.WebPageTitle = "FileManager";
+    fmng.BackgroundColor = "white";
+    fmng.textareaCharset = "accept-charset=\"utf-8\"";
+
+    if (fmng.begin()) {
+        ESP_LOGI(TAG, "Open Filemanager with http://192.168.4.1:%d/", fmng_port);
+    } else {
+        ESP_LOGI(TAG, "Filemanager: did not start");
+    }
+}
+
+void fmng_setup() {
+    WiFi.mode(WIFI_MODE_AP);
+    WiFi.softAP("HAWLogger", "0123456789", 1, 0, WIFI_AP_MAX_CLIENTS);
+    WiFi.disconnect(true);
+    
+    esp_wifi_stop();
+    esp_wifi_deinit();
+    wifi_init_config_t ap_config = WIFI_INIT_CONFIG_DEFAULT();
+    ap_config.ampdu_rx_enable = 0;
+    esp_wifi_init(&ap_config);
+    esp_wifi_start();
+    
+    IPAddress ip(192, 168, 4, 1);
+    IPAddress gateway(192, 168, 4, 1);
+    IPAddress subnet(255, 255, 255, 0);
+    IPAddress dns(192, 168, 4, 1);
+    WiFi.softAPConfig(ip, gateway, subnet); 
+
+    fmng_add_fs();
+    fmng_initialize();
+}
+
+void logger_setup(void)
+{
+    esp_wifi_stop();
+    esp_wifi_deinit();
+
+    setCpuFrequencyMhz(ESP32_SLOW_CLOCK);
+    Serial.updateBaudRate(115200);
+
+    ESP_LOGI(TAG, "enter logger_setup()");
+
+    QueueHandle_t xButtonQueue = xQueueCreate(1, sizeof(BUTTON_EVENT_T));
+    xTaskCreate(logger_main_task, "Main", configMINIMAL_STACK_SIZE + 2048, (void *)xButtonQueue, 1, NULL);
+    xTaskCreate(logger_button_task, "Button", configMINIMAL_STACK_SIZE + 32, (void *)xButtonQueue, 1, NULL);
+    xTaskCreate(loadcell_task, "hx711[0]", configMINIMAL_STACK_SIZE + 128, (void *)&st_hx711[0], 2, NULL);
+    xTaskCreate(loadcell_task, "hx711[1]", configMINIMAL_STACK_SIZE + 128, (void *)&st_hx711[1], 2, NULL);
+    // xTaskCreate(loadcell_task, "hx711[2]", configMINIMAL_STACK_SIZE + 128, (void *)&st_hx711[2], 2, NULL);
+    // xTaskCreate(loadcell_task, "hx711[3]", configMINIMAL_STACK_SIZE + 128, (void *)&st_hx711[3], 2, NULL);
+}
+
+void logger_sd_make_filename(char *fn_str, int fn_str_len)
 {
     int8_t ret = -1;
     char str_buf[16];
@@ -107,7 +252,7 @@ void sd_make_filename(char *fn_str, int fn_str_len)
     sprintf(fn_str, CSV_NAMING_RULE, ret + 1);
 }
 
-void ButtonTask(void *pvParameters) {
+void logger_button_task(void *pvParameters) {
     QueueHandle_t xButtonQueue = (QueueHandle_t)pvParameters;
     uint8_t btn_store = 0x00;
     pinMode(BTN_INPUT, INPUT);
@@ -127,7 +272,7 @@ void ButtonTask(void *pvParameters) {
     }
 }
 
-void MainTask(void *pvParameters) // This is a task.
+void logger_main_task(void *pvParameters) // This is a task.
 {
     QueueHandle_t xButtonQueue = (QueueHandle_t)pvParameters;
     
@@ -151,15 +296,6 @@ void MainTask(void *pvParameters) // This is a task.
     const int sd_buf_size = 256;
     static char sd_buf[sd_buf_size + 1];
 
-#ifdef DISPLAY_OLED
-    lcd.begin();
-    lcd.setContrast(0x02);
-    lcd.lcdOn();
-#else
-    lcd.begin(20, 4);
-    lcd.backlight();
-#endif
-
     // Check ADmodule ADS1115
     if (!adc.init())
     {
@@ -176,7 +312,7 @@ void MainTask(void *pvParameters) // This is a task.
     adc.setConvRate(ADS1115_128_SPS);
 
     // Check SD Card
-    if (!SD.begin(5, sdspi))
+    if (!SD.begin(SD_SPI_CS, sdspi))
     {
         lcd.clear();
         lcd.setCursor(0, 0);
@@ -259,7 +395,7 @@ void MainTask(void *pvParameters) // This is a task.
                 setCpuFrequencyMhz(ESP32_FAST_CLOCK);
                 Serial.updateBaudRate(115200);
 
-                sd_make_filename(sd_fn, sd_fn_len);
+                logger_sd_make_filename(sd_fn, sd_fn_len);
                 // ヘッダーを書き込む
                 csvFile = SD.open(sd_fn, FILE_WRITE, true);
                 if (csvFile)
@@ -299,10 +435,10 @@ void MainTask(void *pvParameters) // This is a task.
                     if (++progress > 3) progress = 0;
                     lcd.print(" "); lcd.print(sd_fn);
                 }
-                else lcd.setCursor(0, 1); lcd.print("                ");
+                else lcd.setCursor(0, 1); lcd.print("Data Logger Mode");
                 break;
             case 1:
-                lcd.setCursor(0, 0); lcd.print(dtostrf((float)xTaskGetTickCount() / configTICK_RATE_HZ, 7, 1, dtostrf_buf)); lcd.print("s");
+                lcd.setCursor(0, 0); lcd.print(dtostrf(get_float_time_sec(), 7, 1, dtostrf_buf)); lcd.print("s");
                 lcd.setCursor(8, 0); lcd.print(dtostrf(phy_displace, 6, 1, dtostrf_buf)); lcd.print("mm");
                 lcd.setCursor(0, 1); lcd.print("A"); lcd.print(dtostrf(l_phy_hx711[0], 7, 1, dtostrf_buf));
                 lcd.setCursor(8, 1); lcd.print("B"); lcd.print(dtostrf(l_phy_hx711[1], 7, 1, dtostrf_buf));
@@ -310,7 +446,7 @@ void MainTask(void *pvParameters) // This is a task.
         }
 
         if (true) {
-            ESP_LOGI(TAG, "{disp:%f, hxA:0x%08lx, hxB:0x%08lx, phd:%f, pha:%f, phb:%f}", local_disp, l_raw_hx711[0], l_raw_hx711[1], phy_displace, l_phy_hx711[0], l_phy_hx711[1]);
+            ESP_LOGI(TAG, "{time:%f, disp:%f, hxA:0x%08lx, hxB:0x%08lx, phd:%f, pha:%f, phb:%f}", get_float_time_sec(), local_disp, l_raw_hx711[0], l_raw_hx711[1], phy_displace, l_phy_hx711[0], l_phy_hx711[1]);
         }
 
         // SDカード保存処理
@@ -320,7 +456,7 @@ void MainTask(void *pvParameters) // This is a task.
             {
                 int p = 0;
                 memset(sd_buf, 0x00, sd_buf_size + 1);
-                dtostrf((float)xTaskGetTickCount() / configTICK_RATE_HZ, -1, 3, dtostrf_buf); p += sprintf(&sd_buf[p], "%s", dtostrf_buf); sd_buf[p++] = ',';
+                dtostrf(get_float_time_sec(), -1, 3, dtostrf_buf); p += sprintf(&sd_buf[p], "%s", dtostrf_buf); sd_buf[p++] = ',';
                 p += sprintf(&sd_buf[p], "0x%08lX", l_raw_hx711[0]) - 2; sd_buf[p++] = ',';
                 p += sprintf(&sd_buf[p], "0x%08lX", l_raw_hx711[1]) - 2; sd_buf[p++] = ',';
                 dtostrf(phy_displace, -1, 3, dtostrf_buf);   p += sprintf(&sd_buf[p], "%s", dtostrf_buf); sd_buf[p++] = ',';

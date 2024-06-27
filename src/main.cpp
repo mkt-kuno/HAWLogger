@@ -1,29 +1,29 @@
 ////////////////////////////////////
 //* Project for Arduino ESP32    *//
 ////////////////////////////////////
-#include "utils.h"
 
+// include libraries normal C++
+#include "utils.h"
+#include <math.h>
+#include <stdio.h>
+#include <freertos/FreeRTOS.h>
+#include <esp_wifi.h>
+// include libraries for Arduino specific
 #include <Arduino.h>
 #include <Wire.h>
 #include <SPI.h>
 #include <SD.h>
 #include <WiFi.h>
 #include <FS.h>
-
-#include <freertos/FreeRTOS.h>
-#include <esp_wifi.h>
-
-#include <math.h>
-
+// include external libraries
 #include <ESPFMfGK.h>
 #include <ADS1115_WE.h>
 #include <LittleFS.h>
 #include <ArduinoJson.h>
 
-const char *TAG = "MAIN";
-const word fmng_port = 8080;
-bool is_fmng_enabled = false;
-
+// ************************************************************
+// * define constants                                         *
+// ************************************************************
 #define SD_SPI_CS               (5)
 #define BTN_INPUT               (27)
 #define DISPLAY_OLED
@@ -34,6 +34,13 @@ bool is_fmng_enabled = false;
 #define NUM_HX711_CH            (2)
 #define ESP32_SLOW_CLOCK        (80)
 #define ESP32_FAST_CLOCK        (240)
+
+// ************************************************************
+// * Global Variables & Objects                               *
+// ************************************************************
+const char *TAG = "MAIN";
+const word fmng_port = 8080;
+static bool is_fmng_enabled = false;
 
 SPIClass sdspi(VSPI);
 ADS1115_WE adc = ADS1115_WE();
@@ -46,13 +53,7 @@ OLED1602 lcd = OLED1602();
 #include <LiquidCrystal_I2C.h>
 LiquidCrystal_I2C lcd(0x27, 20, 4);
 #endif
-typedef enum {
-    BUTTON_NONE = 0,
-    BUTTON_SHORT,
-    BUTTON_LONG,
-} BUTTON_EVENT_T;
 
-//////////////// Calibration Value //////////////////
 static double CALIB_HX711A_AX = 0.00022828; // Horizontal
 static double CALIB_HX711A_B  = 2.47313;
 static double CALIB_HX711B_AX = 0.00042649; // Vertical
@@ -60,13 +61,31 @@ static double CALIB_HX711B_B  = 2118.3;
 static double CALIB_DISP_AX = 31.15;
 static double CALIB_DISP_B  = 0.000;
 
+typedef enum {
+    BUTTON_NONE = 0,
+    BUTTON_SHORT,
+    BUTTON_LONG,
+} BUTTON_EVENT_T;
+// ************************************************************
+// ************************************************************
+// ************************************************************
+
+// ************************************************************
+// * Function Prototypes                                      *
+// ************************************************************
 void logger_main_task(void *pvParameters);
 void logger_button_task(void *pvParameters);
 void logger_setup(void);
 void fmng_setup(void);
 void fmng_loop(void);
 static inline float get_float_time_sec(void) { return (float)xTaskGetTickCount() / configTICK_RATE_HZ; }
+// ************************************************************
+// ************************************************************
+// ************************************************************
 
+// ************************************************************
+// * Arduino Setup & Loop                                     *
+// ************************************************************
 void setup()
 {
     Serial.begin(115200);
@@ -125,7 +144,13 @@ void loop()
 {
     fmng_loop();
 }
+// ************************************************************
+// ************************************************************
+// ************************************************************
 
+// ************************************************************
+// * FileManager Mode Functions                               *
+// ************************************************************
 void fmng_loop()
 {
     if (!is_fmng_enabled) return;
@@ -199,6 +224,10 @@ void fmng_initialize(void) {
 }
 
 void fmng_setup() {
+    ESP_LOGI(TAG, "set ESP32 clock to 240MHz");
+    setCpuFrequencyMhz(ESP32_FAST_CLOCK);
+    Serial.updateBaudRate(115200);
+
     WiFi.mode(WIFI_MODE_AP);
     WiFi.softAP("HAWLogger", "0123456789", 1, 0, WIFI_AP_MAX_CLIENTS);
     WiFi.disconnect(true);
@@ -219,34 +248,41 @@ void fmng_setup() {
     fmng_add_fs();
     fmng_initialize();
 }
+// ************************************************************
+// ************************************************************
+// ************************************************************
 
+// ************************************************************
+// * Logger Mode Functions                                    *
+// ************************************************************
 void logger_setup(void)
 {
+    // in Logger Mode, Don't call ESP32 LOG functions
+    // because it will cause a crash.
+
     esp_wifi_stop();
     esp_wifi_deinit();
 
     setCpuFrequencyMhz(ESP32_SLOW_CLOCK);
     Serial.updateBaudRate(115200);
 
-    ESP_LOGI(TAG, "enter logger_setup()");
-
     QueueHandle_t xButtonQueue = xQueueCreate(1, sizeof(BUTTON_EVENT_T));
-    xTaskCreate(logger_main_task, "Main", configMINIMAL_STACK_SIZE + 2048, (void *)xButtonQueue, 1, NULL);
+    xTaskCreate(logger_main_task, "Main", configMINIMAL_STACK_SIZE + 4096, (void *)xButtonQueue, 1, NULL);
     xTaskCreate(logger_button_task, "Button", configMINIMAL_STACK_SIZE + 32, (void *)xButtonQueue, 1, NULL);
     xTaskCreate(loadcell_task, "hx711[0]", configMINIMAL_STACK_SIZE + 128, (void *)&st_hx711[0], 2, NULL);
     xTaskCreate(loadcell_task, "hx711[1]", configMINIMAL_STACK_SIZE + 128, (void *)&st_hx711[1], 2, NULL);
-    // xTaskCreate(loadcell_task, "hx711[2]", configMINIMAL_STACK_SIZE + 128, (void *)&st_hx711[2], 2, NULL);
-    // xTaskCreate(loadcell_task, "hx711[3]", configMINIMAL_STACK_SIZE + 128, (void *)&st_hx711[3], 2, NULL);
 }
 
 void logger_sd_make_filename(char *fn_str, int fn_str_len)
 {
     int8_t ret = -1;
-    char str_buf[16];
+    const int _filename_str_buf_len = 32;
+    static char _filename_str_buf[_filename_str_buf_len+1];
     for (int8_t index = 0; index < 100; index++)
     {
-        sprintf(str_buf, CSV_NAMING_RULE, index);
-        if (SD.exists(str_buf)) ret = index;
+        memset(_filename_str_buf, 0x00, _filename_str_buf_len);
+        sprintf(_filename_str_buf, CSV_NAMING_RULE, index);
+        if (SD.exists(_filename_str_buf)) ret = index;
     }
     memset(fn_str, 0x00, fn_str_len);
     sprintf(fn_str, CSV_NAMING_RULE, ret + 1);
@@ -260,11 +296,13 @@ void logger_button_task(void *pvParameters) {
         btn_store = btn_store << 1 | (!digitalRead(BTN_INPUT) & 0x01);
         if ((btn_store & 0b00000111) == 0b00000010 || (btn_store & 0b00001111) == 0b00000110)
         {
+            // ESP_LOGI(TAG, "send BUTTON_SHORT event.");
             BUTTON_EVENT_T val = BUTTON_SHORT;
             xQueueSend(xButtonQueue, &val, 100/portTICK_PERIOD_MS);
         }
         if ((btn_store & 0b00111111) == 0b00111110)
         {
+            // ESP_LOGI(TAG, "send BUTTON_LONG event.");
             BUTTON_EVENT_T val = BUTTON_LONG;
             xQueueSend(xButtonQueue, &val, 100/portTICK_PERIOD_MS);
         }
@@ -274,8 +312,10 @@ void logger_button_task(void *pvParameters) {
 
 void logger_main_task(void *pvParameters) // This is a task.
 {
+    // in Logger Mode, Don't call ESP32 LOG functions
+    // because it will cause a crash.
+
     QueueHandle_t xButtonQueue = (QueueHandle_t)pvParameters;
-    
     volatile uint8_t window_num = 0;
 
     int32_t l_raw_hx711[NUM_HX711_CH] = {};
@@ -289,7 +329,7 @@ void logger_main_task(void *pvParameters) // This is a task.
 
     // Naming rule is CSV_NAMING_RULE
     const int sd_fn_len = 16;
-    char sd_fn[sd_fn_len + 1];
+    static char sd_fn[sd_fn_len + 1];
     memset(sd_fn, 0x00, sd_fn_len + 1);
 
     static char dtostrf_buf[17];
@@ -445,10 +485,6 @@ void logger_main_task(void *pvParameters) // This is a task.
                 break;
         }
 
-        if (true) {
-            ESP_LOGI(TAG, "{time:%f, disp:%f, hxA:0x%08lx, hxB:0x%08lx, phd:%f, pha:%f, phb:%f}", get_float_time_sec(), local_disp, l_raw_hx711[0], l_raw_hx711[1], phy_displace, l_phy_hx711[0], l_phy_hx711[1]);
-        }
-
         // SDカード保存処理
         if (is_recording) {
             csvFile = SD.open(sd_fn, FILE_APPEND);
@@ -470,3 +506,6 @@ void logger_main_task(void *pvParameters) // This is a task.
         vTaskDelay(48 / portTICK_PERIOD_MS);
     }
 }
+// ************************************************************
+// ************************************************************
+// ************************************************************

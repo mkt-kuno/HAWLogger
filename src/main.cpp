@@ -27,13 +27,13 @@
 #define SD_SPI_CS               (5)
 #define BTN_INPUT               (27)
 #define DISPLAY_OLED
-#define FIRMWARE_VERSION_STR    "HAW version 2.00"
+#define FIRMWARE_VERSION_STR    "HAW version 2.10"
 #define CSV_NAMING_RULE         "/haw_%02d.CSV"
 #define CSV_HEADER              "time[s],hx711a[i24],hx711b[i24],disp[V],hx711a[N],hx711b[N],disp[mm]"
 #define WIFI_AP_MAX_CLIENTS     (4)
 #define NUM_HX711_CH            (2)
-#define ESP32_SLOW_CLOCK        (80)
-#define ESP32_FAST_CLOCK        (240)
+#define ESP32_SLOW_CLOCK        (10)
+#define ESP32_FAST_CLOCK        (160)
 
 // ************************************************************
 // * Global Variables & Objects                               *
@@ -224,7 +224,7 @@ void fmng_initialize(void) {
 }
 
 void fmng_setup() {
-    ESP_LOGI(TAG, "set ESP32 clock to 240MHz");
+    ESP_LOGI(TAG, "set ESP32 clock up");
     setCpuFrequencyMhz(ESP32_FAST_CLOCK);
     Serial.updateBaudRate(115200);
 
@@ -267,10 +267,10 @@ void logger_setup(void)
     Serial.updateBaudRate(115200);
 
     QueueHandle_t xButtonQueue = xQueueCreate(1, sizeof(BUTTON_EVENT_T));
-    xTaskCreate(logger_main_task, "Main", configMINIMAL_STACK_SIZE + 4096, (void *)xButtonQueue, 1, NULL);
-    xTaskCreate(logger_button_task, "Button", configMINIMAL_STACK_SIZE + 32, (void *)xButtonQueue, 1, NULL);
-    xTaskCreate(loadcell_task, "hx711[0]", configMINIMAL_STACK_SIZE + 128, (void *)&st_hx711[0], 2, NULL);
-    xTaskCreate(loadcell_task, "hx711[1]", configMINIMAL_STACK_SIZE + 128, (void *)&st_hx711[1], 2, NULL);
+    xTaskCreate(logger_main_task, "Main", configMINIMAL_STACK_SIZE + 8192, (void *)xButtonQueue, 1, NULL);
+    xTaskCreate(logger_button_task, "Button", configMINIMAL_STACK_SIZE + 128, (void *)xButtonQueue, 1, NULL);
+    xTaskCreate(loadcell_task, "hx711[0]", configMINIMAL_STACK_SIZE + 512, (void *)&st_hx711[0], 2, NULL);
+    xTaskCreate(loadcell_task, "hx711[1]", configMINIMAL_STACK_SIZE + 512, (void *)&st_hx711[1], 2, NULL);
 }
 
 void logger_sd_make_filename(char *fn_str, int fn_str_len)
